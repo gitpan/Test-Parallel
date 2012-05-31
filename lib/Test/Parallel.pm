@@ -1,6 +1,6 @@
 package Test::Parallel;
 {
-  $Test::Parallel::VERSION = '0.10';
+  $Test::Parallel::VERSION = '0.20';
 }
 use strict;
 use warnings;
@@ -15,7 +15,7 @@ Test::Parallel - simple object interface to launch unit test in parallel
 
 =head1 VERSION
 
-version 0.10
+version 0.20
 
 =head1 DESCRIPTION
 
@@ -27,6 +27,8 @@ Alias for basic methods are available
     ok is isnt like unlike cmp_ok is_deeply
 
 =head1 Usage
+
+=head2 Wrap common Test::More methods
     
 It can be used nearly the same way as Test::More
 
@@ -48,6 +50,31 @@ It can be used nearly the same way as Test::More
     # run the tests in background
     $p->done();
 
+=head2 Implement your own logic
+
+You could also use the results returned by the test function to launch multiple test
+
+    use Test::Parallel;
+    use Test::More;
+
+    my $p = Test::Parallel->new();
+    $p->add( sub { 
+        # will be launched in parallel
+        # any code that take time to execute need to go there
+        my $time = int( rand(42) );
+        sleep( $time );
+        return { number => 123, time => $time };
+    },
+        sub {
+            # will be execute from the main thread ( not in parallel )
+            my $result = shift;
+            is $result->{number} => 123;
+            cmp_ok $result->{time}, '<=', 42;                    
+        }
+     );
+    
+    $p->done();
+
 =for Pod::Coverage ok is isnt like unlike cmp_ok is_deeply can_ok isa_ok
 
 =head1 METHODS
@@ -60,18 +87,20 @@ but you can control this value with two options :
 - max_process : set the maximum process to this value
 - max_process_per_cpu : set the maximum process per cpu, this value
 will be multiplied by the number of cpu ( core ) avaiable on your server
+- max_memory : in MB per job. Will use the minimum between #cpu and total memory available / max_memory
 
     my $p = Test::Parallel->new()
         or Test::Parallel->new( max_process => N )
         or Test::Parallel->new( max_process_per_cpu => P )
+        or Test::Parallel->new( max_memory => M )
 
 =cut
 
 my @methods = qw{ok is isnt like unlike cmp_ok is_deeply can_ok isa_ok};
- 
+
 sub new {
-    my ($class, %opts) = @_;
-    
+    my ( $class, %opts ) = @_;
+
     my $self = bless {}, __PACKAGE__;
 
     $self->_init(%opts);
@@ -110,7 +139,7 @@ Same as Test::More::is_deeply but need a code ref in first argument
 =cut
 
 sub _init {
-    my ($self, %opts) = @_;
+    my ( $self, %opts ) = @_;
 
     $self->_add_methods();
     $self->_pfork(%opts);
@@ -128,20 +157,39 @@ sub _init {
 }
 
 sub _pfork {
-    my ($self, %opts) = @_;
+    my ( $self, %opts ) = @_;
 
     my $cpu;
     if ( defined $opts{max_process} ) {
         $cpu = $opts{max_process};
-    } else {
-        my $factor = $opts{max_process_per_cpu} || 1;    
+    }
+    else {
+        my $factor = $opts{max_process_per_cpu} || 1;
+        eval { $cpu = Sys::Info->new()->device('CPU')->count() * $factor; };
+    }
+    if ( defined $opts{max_memory} ) {
+        my $free_mem;
         eval {
-            $cpu = Sys::Info->new()->device('CPU')->count() * $factor;
+            require Sys::Statistics::Linux::MemStats;
+            $free_mem = Sys::Statistics::Linux::MemStats->new->get->{realfree};
         };
+        my $max_mem = $opts{max_memory} * 1024;    # 1024 **2 = 1 GO => expr in Kb
+        my $cpu_for_mem;
+        if ($@) {
+            warn "Cannot guess amount of available free memory need Sys::Statistics::Linux::MemStats";
+            $cpu_for_mem = 2;
+        }
+        else {
+            $cpu_for_mem = int( $free_mem / $max_mem );
+        }
+
+        # min
+        $cpu = ( $cpu_for_mem < $cpu ) ? $cpu_for_mem : $cpu;
     }
     $cpu ||= 1;
+
     # we could also set a minimum amount of required memory
-    $self->{pfork} = new Parallel::ForkManager(int($cpu));
+    $self->{pfork} = new Parallel::ForkManager( int($cpu) );
 }
 
 =head2 $pm->add($code)
@@ -233,16 +281,25 @@ sub done {
     my $results = $self->results();
     map {
         my $test = $_;
-        return unless $test && ref $test eq 'HASH';
-        return unless defined $test->{test} && defined $test->{args};
+        return unless $test;
+        die "cannot find result for test #${c}" unless exists $results->[$c];
+        my $res = $results->[ $c++ ];
 
-        die "cannot find result for test ", join( ' ', $test->{test}, @{ $test->{args} } )
-          unless exists $results->[$c];
-        my $res  = $results->[ $c++ ];
-        my @args = ( $res, @{ $test->{args} } );
-        my $t    = $test->{test};
-        my $str  = join( ', ', map { "\$args[$_]" } ( 0 .. $#args ) );
-        eval "$t(" . $str . ")";
+        if ( ref $test eq 'HASH' ) {
+
+            # internal mechanism
+            return unless defined $test->{test} && defined $test->{args};
+
+            my @args = ( $res, @{ $test->{args} } );
+            my $t    = $test->{test};
+            my $str  = join( ', ', map { "\$args[$_]" } ( 0 .. $#args ) );
+            eval "$t(" . $str . ")";
+        }
+        elsif ( ref $test eq 'CODE' ) {
+
+            # execute user function
+            $test->($res);
+        }
 
     } @{ $self->{tests} };
 
@@ -268,11 +325,11 @@ sub results {
     alias to results
 
 =cut
+
 {
     no warnings;
     *result = \&results;
 }
-
 
 1;
 

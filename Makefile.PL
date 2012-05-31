@@ -22,11 +22,12 @@ my %WriteMakefileArgs = (
   "PREREQ_PM" => {
     "Parallel::ForkManager" => 0,
     "Sys::Info" => 0,
+    "Sys::Statistics::Linux::MemStats" => 0,
     "Test::More" => 0,
     "strict" => 0,
     "warnings" => 0
   },
-  "VERSION" => "0.10",
+  "VERSION" => "0.20",
   "test" => {
     "TESTS" => "t/*.t"
   }

@@ -20,9 +20,13 @@
          }
       },
       "runtime" : {
+         "recommends" : {
+            "Sys::Statistics::Linux::MemStats" : 0
+         },
          "requires" : {
             "Parallel::ForkManager" : 0,
             "Sys::Info" : 0,
+            "Sys::Statistics::Linux::MemStats" : 0,
             "Test::More" : 0,
             "strict" : 0,
             "warnings" : 0
@@ -30,6 +34,6 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.10"
+   "version" : "0.20"
 }
 
